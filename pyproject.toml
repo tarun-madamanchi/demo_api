@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "app"
+version = "0.1.0"
+description = "fastapi"
+authors = ["AC19565 <alexandre_dillon@goodyear.com>"]
+readme = "README.md"
+
+[tool.poetry.scripts]
+start = "app.main:start"
+
+[tool.poetry.dependencies]
+python = "^3.11,<3.12"
+uvicorn = "0.27.1"
+fastapi = "^0.110.0"
+pdt-common = {version = "0.5.1", source = "nexus"}
+
+[tool.poetry.dev-dependencies]
+pytest = "8.0.2"
+pytest-cov = "4.1.0"
+black = "24.2.0"
+isort = "5.13.2"
+pre-commit = "3.6.2"
+flake8 = "7.0.0"
+mypy = "1.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "PyPI"
+
+[[tool.poetry.source]]
+name = "nexus"
+url = "https://nexus.goodyear.eu/repository/pypi-globaltech/simple"
+priority = "primary"
