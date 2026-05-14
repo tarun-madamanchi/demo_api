@@ -30,7 +30,11 @@ class LLMProvider(Protocol):
 
 
 class GitHubModelsLLMProvider:
-    """LLM provider using GitHub Models API for logic-equivalence checks."""
+    """LLM provider using GitHub Models API for logic-equivalence checks.
+
+    Automatically disables itself if the API is unreachable (SSL/network)
+    to avoid repeated slow timeouts.
+    """
 
     def __init__(
         self,
@@ -39,12 +43,16 @@ class GitHubModelsLLMProvider:
     ):
         self._model = model
         self._api_token = api_token
+        self._api_disabled = False
 
     def check_logic_equivalence(
         self, source_code: str, candidate_code: str, timeout: float
     ) -> tuple[float, str]:
         """Check logic equivalence via GitHub Models API."""
         import httpx
+
+        if self._api_disabled:
+            return 0.0, "LLM API disabled (network unreachable)"
 
         prompt = (
             "Compare these two code blocks and determine if they are logically equivalent "
@@ -96,7 +104,20 @@ class GitHubModelsLLMProvider:
             return max(0.0, min(1.0, confidence)), rationale
 
         except Exception as e:
-            logger.warning("LLM call failed: %s", e)
+            error_str = str(e)
+            if any(
+                kw in error_str
+                for kw in ("SSL", "CERTIFICATE_VERIFY", "ConnectError", "timed out")
+            ):
+                if not self._api_disabled:
+                    logger.warning(
+                        "LLM API unreachable (corporate SSL proxy): %s. "
+                        "Disabling LLM validation for this session.",
+                        e,
+                    )
+                    self._api_disabled = True
+            else:
+                logger.warning("LLM call failed: %s", e)
             return 0.0, f"LLM unavailable: {e}"
 
 

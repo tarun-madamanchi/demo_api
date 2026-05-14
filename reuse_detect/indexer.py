@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import shutil
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timedelta
@@ -210,12 +211,27 @@ class UnifiedIndexer:
     def _fetch_github_repo_blocks(self, repo_url: str) -> list[CodeBlock]:
         """Fetch a GitHub repository and extract code blocks.
 
-        Uses the GitHub API with authentication to fetch repository contents.
+        Strategy:
+        1. Try GitHub API with token (works for non-SSO orgs)
+        2. Fall back to shallow git clone (works with SSO-authorized git credentials)
         """
+        # Try API first
+        blocks = self._fetch_via_api(repo_url)
+        if blocks:
+            return blocks
+
+        # Fall back to git clone (uses system git credentials which
+        # are typically SSO-authorized via credential manager)
+        logger.info(
+            "API access failed for %s. Falling back to git clone.", repo_url
+        )
+        return self._fetch_via_git_clone(repo_url)
+
+    def _fetch_via_api(self, repo_url: str) -> list[CodeBlock]:
+        """Try fetching repo contents via GitHub REST API."""
         try:
             import httpx
 
-            # Parse repo URL to get owner/repo
             parts = repo_url.rstrip("/").split("/")
             if len(parts) >= 2:
                 owner, repo = parts[-2], parts[-1]
@@ -223,43 +239,36 @@ class UnifiedIndexer:
                 logger.warning("Invalid repo URL format: %s", repo_url)
                 return []
 
-            # Build headers with authentication
             headers: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
             if self.api_token:
                 headers["Authorization"] = f"Bearer {self.api_token}"
-            else:
-                logger.warning(
-                    "No API token available for GitHub API calls. "
-                    "Private repos will not be accessible."
-                )
 
-            # Use GitHub API to list Python files
             api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1"
             response = httpx.get(api_url, headers=headers, timeout=30.0)
 
-            if response.status_code == 401:
-                logger.error(
-                    "GitHub API authentication failed for %s. Check GITHUB_TOKEN.",
-                    repo_url,
-                )
+            if response.status_code == 403:
+                # Check if SSO is required
+                sso_header = response.headers.get("x-github-sso", "")
+                if "required" in sso_header:
+                    logger.warning(
+                        "GitHub org requires SSO authorization for API access. "
+                        "Will fall back to git clone."
+                    )
+                else:
+                    logger.error(
+                        "GitHub API access forbidden for %s. "
+                        "Token may lack repo scope.",
+                        repo_url,
+                    )
                 return []
-            elif response.status_code == 403:
-                logger.error(
-                    "GitHub API access forbidden for %s. Token may lack repo scope.",
-                    repo_url,
-                )
-                return []
-            elif response.status_code == 404:
-                logger.error(
-                    "GitHub repo not found: %s. Check URL and token permissions.",
-                    repo_url,
+            elif response.status_code in (401, 404):
+                logger.warning(
+                    "GitHub API returned %d for %s", response.status_code, repo_url
                 )
                 return []
             elif response.status_code != 200:
                 logger.warning(
-                    "GitHub API returned %d for %s",
-                    response.status_code,
-                    repo_url,
+                    "GitHub API returned %d for %s", response.status_code, repo_url
                 )
                 return []
 
@@ -271,7 +280,7 @@ class UnifiedIndexer:
             ]
 
             logger.info(
-                "Found %d Python files in %s/%s", len(python_files), owner, repo
+                "Found %d Python files in %s/%s via API", len(python_files), owner, repo
             )
 
             blocks: list[CodeBlock] = []
@@ -279,7 +288,6 @@ class UnifiedIndexer:
                 content_url = (
                     f"https://raw.githubusercontent.com/{owner}/{repo}/main/{file_path}"
                 )
-                # raw.githubusercontent.com also needs auth for private repos
                 content_headers: dict[str, str] = {}
                 if self.api_token:
                     content_headers["Authorization"] = f"token {self.api_token}"
@@ -292,21 +300,115 @@ class UnifiedIndexer:
                         content_response.text, Path(file_path)
                     )
                     blocks.extend(file_blocks)
-                else:
-                    logger.debug(
-                        "Failed to fetch %s (status %d)",
-                        file_path,
-                        content_response.status_code,
-                    )
 
-            logger.info(
-                "Extracted %d code blocks from %s/%s", len(blocks), owner, repo
-            )
             return blocks
 
         except Exception as e:
-            logger.warning("Failed to fetch GitHub repo %s: %s", repo_url, e)
+            logger.warning("API fetch failed for %s: %s", repo_url, e)
             return []
+
+    def _fetch_via_git_clone(self, repo_url: str) -> list[CodeBlock]:
+        """Fetch repo via shallow git clone.
+
+        Uses the system's git credentials (credential manager), which
+        typically have SSO authorization for enterprise orgs.
+        """
+        # Ensure it's a proper git URL
+        if not repo_url.startswith("https://"):
+            git_url = f"https://github.com/{repo_url.lstrip('/')}"
+        else:
+            git_url = repo_url
+
+        if not git_url.endswith(".git"):
+            git_url = git_url + ".git"
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="reuse_detect_"))
+        try:
+            logger.info("Shallow cloning %s", git_url)
+            result = subprocess.run(
+                [
+                    "git", "clone",
+                    "--depth", "1",
+                    "--single-branch",
+                    "--branch", "main",
+                    git_url,
+                    str(tmp_dir / "repo"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            if result.returncode != 0:
+                # Try 'master' branch if 'main' fails
+                logger.debug(
+                    "Clone with 'main' failed, trying 'master': %s", result.stderr
+                )
+                result = subprocess.run(
+                    [
+                        "git", "clone",
+                        "--depth", "1",
+                        "--single-branch",
+                        "--branch", "master",
+                        git_url,
+                        str(tmp_dir / "repo"),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+            if result.returncode != 0:
+                logger.error(
+                    "Git clone failed for %s: %s", repo_url, result.stderr.strip()
+                )
+                return []
+
+            repo_dir = tmp_dir / "repo"
+            blocks: list[CodeBlock] = []
+
+            # Walk all Python files in the cloned repo
+            python_files = list(repo_dir.rglob("*.py"))
+            logger.info(
+                "Found %d Python files in cloned repo %s",
+                len(python_files),
+                repo_url,
+            )
+
+            for file_path in python_files:
+                # Skip test files and __pycache__
+                relative = file_path.relative_to(repo_dir)
+                relative_str = str(relative)
+                if any(
+                    part in relative_str
+                    for part in ("__pycache__", "test_", "_test.py", ".tox", ".venv")
+                ):
+                    continue
+
+                try:
+                    source = file_path.read_text(encoding="utf-8")
+                    file_blocks = self._parse_source_to_blocks(source, relative)
+                    blocks.extend(file_blocks)
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.debug("Skipping %s: %s", file_path, e)
+                    continue
+
+            logger.info(
+                "Extracted %d code blocks from %s via git clone",
+                len(blocks),
+                repo_url,
+            )
+            return blocks
+
+        except subprocess.TimeoutExpired:
+            logger.error("Git clone timed out for %s", repo_url)
+            return []
+        except Exception as e:
+            logger.error("Git clone failed for %s: %s", repo_url, e)
+            return []
+        finally:
+            # Clean up temp directory
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _parse_source_to_blocks(self, source: str, file_path: Path) -> list[CodeBlock]:
         """Parse source code into CodeBlock objects for functions and classes."""

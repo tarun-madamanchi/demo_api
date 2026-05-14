@@ -37,7 +37,12 @@ class EmbeddingProvider(Protocol):
 
 
 class GitHubModelsEmbeddingProvider:
-    """Embedding provider using GitHub Models API with local fallback."""
+    """Embedding provider using GitHub Models API with local fallback.
+
+    If the API is unreachable (SSL errors, network issues), automatically
+    switches to local embeddings for the rest of the session to avoid
+    repeated slow failures.
+    """
 
     def __init__(
         self,
@@ -48,6 +53,7 @@ class GitHubModelsEmbeddingProvider:
         self._api_token = api_token
         self._dimension = 1536  # Default for text-embedding-3-small
         self._fallback: "LocalEmbeddingProvider | None" = None
+        self._api_disabled = False  # Set True after first network/SSL failure
 
     def _get_fallback(self):
         """Lazy-load the local fallback provider."""
@@ -59,7 +65,7 @@ class GitHubModelsEmbeddingProvider:
 
     @property
     def model_id(self) -> str:
-        return self._model
+        return self._model if not self._api_disabled else "local-token-hash"
 
     @property
     def dimension(self) -> int:
@@ -69,8 +75,7 @@ class GitHubModelsEmbeddingProvider:
         """Generate embedding via GitHub Models API, with local fallback."""
         import httpx
 
-        if not self._api_token:
-            logger.warning("No API token for embeddings, using local fallback")
+        if not self._api_token or self._api_disabled:
             return self._get_fallback().embed(text)
 
         try:
@@ -87,17 +92,14 @@ class GitHubModelsEmbeddingProvider:
             data = response.json()
             return data["data"][0]["embedding"]
         except Exception as e:
-            logger.warning(
-                "GitHub Models embedding API failed: %s. Using local fallback.", e
-            )
+            self._handle_api_failure(e)
             return self._get_fallback().embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts in one API call."""
         import httpx
 
-        if not self._api_token:
-            logger.warning("No API token for embeddings, using local fallback")
+        if not self._api_token or self._api_disabled:
             return self._get_fallback().embed_batch(texts)
 
         try:
@@ -116,11 +118,28 @@ class GitHubModelsEmbeddingProvider:
             sorted_data = sorted(data["data"], key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]
         except Exception as e:
-            logger.warning(
-                "GitHub Models batch embedding API failed: %s. Using local fallback.",
-                e,
-            )
+            self._handle_api_failure(e)
             return self._get_fallback().embed_batch(texts)
+
+    def _handle_api_failure(self, error: Exception) -> None:
+        """Handle API failure — disable API on network/SSL errors for session."""
+        error_str = str(error)
+        # SSL and connection errors mean the API is unreachable from this
+        # network (corporate proxy with SSL inspection). Disable further
+        # attempts to avoid repeated 60s timeout waits.
+        if any(
+            keyword in error_str
+            for keyword in ("SSL", "CERTIFICATE_VERIFY", "ConnectError", "timed out")
+        ):
+            if not self._api_disabled:
+                logger.warning(
+                    "GitHub Models API unreachable (likely corporate SSL proxy): %s. "
+                    "Switching to local embeddings for this session.",
+                    error,
+                )
+                self._api_disabled = True
+        else:
+            logger.warning("GitHub Models embedding API failed: %s", error)
 
 
 class FeatureEmbeddingBuilder:
