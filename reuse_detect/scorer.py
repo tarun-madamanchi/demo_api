@@ -148,6 +148,9 @@ class HybridScorerLLMValidator:
         """Reset the LLM call counter (call at start of each commit)."""
         self._llm_calls_made = 0
 
+    # Max candidates to send to LLM per block (pre-filter the rest)
+    MAX_LLM_CANDIDATES_PER_BLOCK = 5
+
     def score_and_validate(
         self,
         fp: BlockFingerprint,
@@ -155,46 +158,53 @@ class HybridScorerLLMValidator:
     ) -> list[ValidatedMatch]:
         """For each candidate: structural score, semantic score, LLM logic check.
 
+        Pre-filters candidates: only the top N by structural+semantic score
+        are sent to the LLM. This avoids exhausting rate limits on low-quality
+        candidates.
+
         Emit ValidatedMatch with a combined score in [0.0, 1.0].
         """
-        validated: list[ValidatedMatch] = []
-
+        # Phase 1: Score ALL candidates with structural + semantic (cheap, local)
+        pre_scored: list[tuple[SourceTaggedCandidate, float, float, bool]] = []
         for candidate in candidates:
-            # Compute structural similarity
             structural_score = self._compute_structural_similarity(
                 fp, candidate.fingerprint
             )
-
-            # Compute semantic similarity (1 - cosine distance)
             semantic_score = self._compute_semantic_similarity(
                 fp, candidate.fingerprint
             )
-
-            # LLM logic-equivalence check (if budget allows)
-            llm_confidence = 0.0
-            llm_rationale = "LLM not invoked"
-
-            if (
-                self.llm_provider
-                and self._llm_calls_made < self.config.max_llm_calls_per_commit
-            ):
-                try:
-                    llm_confidence, llm_rationale = (
-                        self.llm_provider.check_logic_equivalence(
-                            fp.block.content,
-                            candidate.fingerprint.block.content,
-                            timeout=self.config.llm_timeout_seconds,
-                        )
-                    )
-                    self._llm_calls_made += 1
-                except Exception as e:
-                    logger.warning("LLM validation failed: %s", e)
-                    llm_rationale = f"LLM fallback: {e}"
-
-            # Compute combined score
             has_semantic = bool(
                 fp.embedding.vector and candidate.fingerprint.embedding.vector
             )
+            pre_scored.append((candidate, structural_score, semantic_score, has_semantic))
+
+        # Phase 2: Sort by preliminary score (structural + semantic) descending
+        pre_scored.sort(
+            key=lambda x: (x[1] + x[2]) / 2.0,
+            reverse=True,
+        )
+
+        # Phase 3: Only call LLM on the top candidates
+        validated: list[ValidatedMatch] = []
+        for idx, (candidate, structural_score, semantic_score, has_semantic) in enumerate(pre_scored):
+            llm_confidence = 0.0
+            llm_rationale = "LLM not invoked (pre-filtered)"
+
+            # Only invoke LLM on top candidates that pass a minimum bar
+            should_call_llm = (
+                self.llm_provider
+                and self._llm_calls_made < self.config.max_llm_calls_per_commit
+                and idx < self.MAX_LLM_CANDIDATES_PER_BLOCK
+                and (structural_score + semantic_score) / 2.0 >= 0.15
+            )
+
+            if should_call_llm:
+                llm_confidence, llm_rationale = self._call_llm_with_retry(
+                    fp.block.content,
+                    candidate.fingerprint.block.content,
+                )
+
+            # Compute combined score
             combined_score = self._compute_combined_score(
                 structural_score, semantic_score, llm_confidence, has_semantic
             )
@@ -217,6 +227,46 @@ class HybridScorerLLMValidator:
             )
 
         return validated
+
+    def _call_llm_with_retry(
+        self,
+        source_code: str,
+        candidate_code: str,
+        max_retries: int = 2,
+    ) -> tuple[float, str]:
+        """Call LLM with retry on 429 rate-limit errors.
+
+        Respects the Retry-After header from the API response.
+        """
+        import time
+
+        for attempt in range(max_retries + 1):
+            try:
+                confidence, rationale = self.llm_provider.check_logic_equivalence(
+                    source_code,
+                    candidate_code,
+                    timeout=self.config.llm_timeout_seconds,
+                )
+                self._llm_calls_made += 1
+                return confidence, rationale
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str and attempt < max_retries:
+                    # Extract Retry-After if possible, default to 30s
+                    wait_time = 30
+                    logger.info(
+                        "Rate limited (attempt %d/%d). Waiting %ds before retry...",
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.warning("LLM validation failed: %s", e)
+                    return 0.0, f"LLM fallback: {e}"
+
+        return 0.0, "LLM retries exhausted"
 
     def _compute_structural_similarity(
         self, fp1: BlockFingerprint, fp2: BlockFingerprint
