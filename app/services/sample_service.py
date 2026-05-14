@@ -88,27 +88,3 @@ class SampleService:
         except Exception as e:
             get_logger().error(str(e))
             raise
-
-    def get_user_info(args: tuple, kwargs: dict[str, Any]) -> UserInfo:
-        """
-        Extract user information from request.state.
-
-        Returns a UserInfo with safe defaults if request is not found.
-        """
-        request = kwargs.get("request")
-
-        if request is None:
-            for arg in args:
-                if hasattr(arg, "state"):
-                    request = arg
-                    break
-
-        if request is None or not hasattr(request, "state"):
-            return UserInfo()
-
-        return UserInfo(
-            gy_user_id=getattr(request.state, "gy_user_id", "unknown") or "unknown",
-            gy_user_mail=getattr(request.state, "gy_user_mail", "unknown") or "unknown",
-            user_roles=getattr(request.state, "user_roles", set()) or set(),
-            user_groups=getattr(request.state, "user_groups", set()) or set(),
-        )
