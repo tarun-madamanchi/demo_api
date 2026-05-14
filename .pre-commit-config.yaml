@@ -47,3 +47,12 @@ repos:
         language: system
         entry: poetry run mypy
         types: [python]
+- repo: local
+  hooks:
+    - id: reuse-detect
+      name: Common Library Reuse Detection
+      entry: poetry run reuse-detect --staged
+      language: system
+      types: [python]
+      stages: [commit]
+      pass_filenames: false

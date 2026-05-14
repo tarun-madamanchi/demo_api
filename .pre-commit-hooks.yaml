@@ -1,0 +1,7 @@
+- id: reuse-detect
+  name: Common Library Reuse Detection
+  description: Detect duplicate or reusable code before committing
+  entry: reuse-detect --staged
+  language: python
+  types: [python]
+  stages: [commit]

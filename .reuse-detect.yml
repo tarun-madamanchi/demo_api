@@ -1,0 +1,48 @@
+# Common Library Reuse Detection Configuration
+# See: .kiro/specs/common-library-reuse-detection/design.md
+
+# GitHub repositories to index for common library detection
+# Maps GitHub repo URLs to their Python package names.
+# Only repos whose package name appears in pyproject.toml dependencies will be indexed.
+github_repositories:
+  - url: "https://github.com/goodyear/pdt-common-lib"
+    package_name: "pdt-common"
+  - url: "https://github.com/goodyear/pdt-fastapi-lib"
+    package_name: "pdt-fastapi-lib"
+
+# Similarity thresholds
+similarity_threshold: 0.75
+block_threshold: 0.85
+warn_threshold: 0.70
+
+# Minimum number of lines for a code block to be analyzed
+min_block_lines: 3
+
+# Cache directory for vector store and metadata
+cache_dir: ".reuse-cache"
+
+# How often to refresh the GitHub library index (hours)
+index_refresh_interval_hours: 24
+
+# File patterns to exclude from analysis
+exclude_patterns:
+  - "test_*"
+  - "*_test.py"
+  - "conftest.py"
+  - "__pycache__"
+
+# File patterns to include in analysis
+include_patterns:
+  - "*.py"
+
+# Maximum number of suggestions per code block
+max_suggestions_per_block: 3
+
+# Number of nearest neighbors to retrieve
+top_k: 50
+
+# LLM timeout in seconds
+llm_timeout_seconds: 10.0
+
+# Maximum LLM calls per commit
+max_llm_calls_per_commit: 20

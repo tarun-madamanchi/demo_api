@@ -347,6 +347,53 @@ The hook is installed via the repo's pre-commit config and invokes a thin CLI en
 
 The same CLI is invoked in CI on the PR's diff against the merge-base. On `BLOCK` the CI job fails and posts a PR comment with the suggestions.
 
+## Dependency-Gated Library Indexing
+
+The system only checks common libraries for reusable code **if the library is declared as a dependency in `pyproject.toml`**. If a common library is not present in the project's Poetry dependencies, it is excluded from reuse detection entirely.
+
+### Rationale
+
+There is no point suggesting code reuse from a library the project cannot import. If `pdt-common` is not in `[tool.poetry.dependencies]`, then the developer cannot use any code from `pdt-common-lib`, so scanning it would produce unusable suggestions.
+
+### How It Works
+
+1. On pipeline startup, the `DependencyChecker` reads `pyproject.toml` and extracts all declared dependencies (from `[tool.poetry.dependencies]`, `[tool.poetry.dev-dependencies]`, Poetry groups, and PEP 621 sections).
+2. Each configured GitHub repository is checked against the dependency set using `filter_indexable_repos`.
+3. Only repositories whose package name matches a declared dependency are indexed and scanned for reuse candidates.
+4. Repositories that do not match any dependency are skipped — no indexing, no scanning, no suggestions.
+
+### Matching Rules
+
+The matcher supports a `-lib` suffix convention common in internal repositories:
+
+| Configured Repo | pyproject.toml Dependency | Match? | Reason |
+|---|---|---|---|
+| `pdt-common-lib` | `pdt-common` | ✅ Yes | Strips `-lib` suffix → `pdt-common` found in dependencies |
+| `pdt-common-lib` | *(not listed)* | ❌ No | Neither `pdt-common-lib` nor `pdt-common` in dependencies |
+| `some-other-lib` | *(not listed)* | ❌ No | Not a project dependency; skipped entirely |
+| `my-utils` | `my-utils` | ✅ Yes | Direct name match |
+
+### Example
+
+Given this `pyproject.toml`:
+
+```toml
+[tool.poetry.dependencies]
+pdt-common = {version = "0.5.1", source = "nexus"}
+```
+
+And this configuration with multiple common libraries:
+
+```yaml
+github_repositories:
+  - url: "https://github.com/org/pdt-common-lib"
+    package_name: "pdt-common-lib"
+  - url: "https://github.com/org/pdt-analytics-lib"
+    package_name: "pdt-analytics-lib"
+```
+
+**Result:** Only `pdt-common-lib` is indexed and checked for reusable code, because `pdt-common` is in the dependencies. `pdt-analytics-lib` is skipped because neither `pdt-analytics-lib` nor `pdt-analytics` appears in `pyproject.toml`.
+
 ## Configuration
 
 ```python
