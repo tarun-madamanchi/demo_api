@@ -211,20 +211,11 @@ class UnifiedIndexer:
     def _fetch_github_repo_blocks(self, repo_url: str) -> list[CodeBlock]:
         """Fetch a GitHub repository and extract code blocks.
 
-        Strategy:
-        1. Try GitHub API with token (works for non-SSO orgs)
-        2. Fall back to shallow git clone (works with SSO-authorized git credentials)
+        Uses git clone directly (works with SSO-authorized git credentials
+        from the system credential manager). The GitHub REST API is skipped
+        because enterprise orgs with SAML SSO block PAT-based API access
+        unless the token is explicitly SSO-authorized.
         """
-        # Try API first
-        blocks = self._fetch_via_api(repo_url)
-        if blocks:
-            return blocks
-
-        # Fall back to git clone (uses system git credentials which
-        # are typically SSO-authorized via credential manager)
-        logger.info(
-            "API access failed for %s. Falling back to git clone.", repo_url
-        )
         return self._fetch_via_git_clone(repo_url)
 
     def _fetch_via_api(self, repo_url: str) -> list[CodeBlock]:
@@ -462,12 +453,14 @@ class UnifiedIndexer:
         for file_path in root.rglob("*.py"):
             relative = file_path.relative_to(root)
             filename = file_path.name
+            # Use forward slashes for pattern matching (cross-platform)
+            relative_str = str(relative).replace("\\", "/")
 
             # Check exclude patterns
             excluded = False
             for pattern in self.config.exclude_patterns:
                 if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(
-                    str(relative), pattern
+                    relative_str, pattern
                 ):
                     excluded = True
                     break
@@ -480,7 +473,7 @@ class UnifiedIndexer:
                 included = False
                 for pattern in self.config.include_patterns:
                     if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(
-                        str(relative), pattern
+                        relative_str, pattern
                     ):
                         included = True
                         break

@@ -33,18 +33,29 @@ class ChangeExtractor:
         """
         diff_output = self._get_staged_diff(base_ref)
         if not diff_output.strip():
+            logger.info("No staged changes found (git diff --staged is empty)")
             return []
 
         changed_files = self._parse_diff_files(diff_output)
+        logger.info(
+            "Found %d changed files in staged diff", len(changed_files)
+        )
         blocks: list[CodeBlock] = []
 
         for file_path, changed_lines, change_type in changed_files:
             if not self._should_process_file(file_path):
+                logger.debug("Skipping %s (excluded by patterns)", file_path)
                 continue
 
             try:
                 file_blocks = self._extract_blocks_from_file(
                     file_path, changed_lines, change_type
+                )
+                logger.debug(
+                    "Extracted %d blocks from %s (changed lines: %s)",
+                    len(file_blocks),
+                    file_path,
+                    changed_lines[:10],
                 )
                 blocks.extend(file_blocks)
             except (SyntaxError, OSError) as e:
@@ -57,7 +68,13 @@ class ChangeExtractor:
                 continue
 
         # Filter trivial blocks
-        return [b for b in blocks if not self.is_trivial(b)]
+        non_trivial = [b for b in blocks if not self.is_trivial(b)]
+        logger.info(
+            "Extracted %d blocks total, %d non-trivial",
+            len(blocks),
+            len(non_trivial),
+        )
+        return non_trivial
 
     def is_trivial(self, block: CodeBlock) -> bool:
         """Return True if block is too small or comments/whitespace-only."""
@@ -122,6 +139,10 @@ class ChangeExtractor:
         except subprocess.CalledProcessError as e:
             # If base_ref doesn't exist (e.g., initial commit), try without it
             if "unknown revision" in (e.stderr or ""):
+                logger.debug(
+                    "Base ref '%s' not found, trying diff without base ref",
+                    base_ref,
+                )
                 result = subprocess.run(
                     ["git", "diff", "--staged", "--unified=0"],
                     capture_output=True,
@@ -129,7 +150,9 @@ class ChangeExtractor:
                     cwd=str(self.repo_root),
                 )
                 return result.stdout
-            raise
+            # If there's nothing staged, git may return non-zero
+            logger.debug("git diff --staged failed: %s", e.stderr)
+            return ""
 
     def _parse_diff_files(
         self, diff_output: str
@@ -172,7 +195,8 @@ class ChangeExtractor:
     def _should_process_file(self, file_path: Path) -> bool:
         """Check if a file matches include/exclude patterns."""
         filename = file_path.name
-        filepath_str = str(file_path)
+        # Use forward slashes for cross-platform pattern matching
+        filepath_str = str(file_path).replace("\\", "/")
 
         # Check exclude patterns first
         for pattern in self.config.exclude_patterns:

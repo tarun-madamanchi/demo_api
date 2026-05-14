@@ -30,6 +30,7 @@ exclude_patterns:
   - "*_test.py"
   - "conftest.py"
   - "__pycache__"
+  - "reuse_detect/*"
 
 # File patterns to include in analysis
 include_patterns:
