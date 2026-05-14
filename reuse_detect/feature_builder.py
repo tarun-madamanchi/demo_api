@@ -87,6 +87,7 @@ class GitHubModelsEmbeddingProvider:
                 },
                 json={"input": text, "model": self._model},
                 timeout=30.0,
+                verify=False,
             )
             response.raise_for_status()
             data = response.json()
@@ -111,6 +112,7 @@ class GitHubModelsEmbeddingProvider:
                 },
                 json={"input": texts, "model": self._model},
                 timeout=60.0,
+                verify=False,
             )
             response.raise_for_status()
             data = response.json()

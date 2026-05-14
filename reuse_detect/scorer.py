@@ -78,6 +78,7 @@ class GitHubModelsLLMProvider:
                     "temperature": 0.0,
                 },
                 timeout=timeout,
+                verify=False,
             )
             response.raise_for_status()
             data = response.json()
