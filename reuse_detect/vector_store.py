@@ -38,8 +38,8 @@ class VectorStore(Protocol):
         vector: list[float],
         top_k: int = 50,
         sources: list[IndexSource] | None = None,
-    ) -> list[tuple[str, float, IndexSource]]:
-        """Query for nearest neighbors. Returns (indexed_id, distance, source) tuples."""
+    ) -> list[tuple[str, float, IndexSource, dict]]:
+        """Query for nearest neighbors. Returns (indexed_id, distance, source, metadata) tuples."""
         ...
 
     def save(self) -> None:
@@ -95,6 +95,13 @@ class FAISSVectorStore:
             "function_name": fingerprint.block.function_name,
             "class_name": fingerprint.block.class_name,
             "content": fingerprint.block.content,
+            "start_line": fingerprint.block.start_line,
+            "end_line": fingerprint.block.end_line,
+            "ast_structure_hash": fingerprint.features.ast_structure_hash,
+            "control_flow_pattern": fingerprint.features.control_flow_pattern,
+            "token_sequence": fingerprint.features.token_sequence,
+            "function_signatures": fingerprint.features.function_signatures,
+            "decorators": fingerprint.features.decorators,
         }
         self._id_to_position[indexed_id] = position
 
@@ -118,8 +125,11 @@ class FAISSVectorStore:
         vector: list[float],
         top_k: int = 50,
         sources: list[IndexSource] | None = None,
-    ) -> list[tuple[str, float, IndexSource]]:
-        """Query for nearest neighbors with optional source filtering."""
+    ) -> list[tuple[str, float, IndexSource, dict]]:
+        """Query for nearest neighbors with optional source filtering.
+
+        Returns (indexed_id, distance, source, metadata) tuples.
+        """
         if not self._vectors or not self._metadata:
             return []
 
@@ -155,7 +165,7 @@ class FAISSVectorStore:
         # Sort by distance (ascending)
         sorted_indices = np.argsort(distances)
 
-        results: list[tuple[str, float, IndexSource]] = []
+        results: list[tuple[str, float, IndexSource, dict]] = []
         for idx in sorted_indices:
             if len(results) >= top_k:
                 break
@@ -168,7 +178,7 @@ class FAISSVectorStore:
             if sources and source not in sources:
                 continue
 
-            results.append((meta["indexed_id"], float(distances[idx]), source))
+            results.append((meta["indexed_id"], float(distances[idx]), source, meta))
 
         return results
 

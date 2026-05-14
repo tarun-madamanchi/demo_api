@@ -11,12 +11,7 @@ from typing import Protocol
 import numpy as np
 
 from .config import DetectionConfig
-from .models import (
-    BlockFingerprint,
-    IndexSource,
-    SourceTaggedCandidate,
-    ValidatedMatch,
-)
+from .models import BlockFingerprint, IndexSource, SourceTaggedCandidate, ValidatedMatch
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +120,7 @@ class HybridScorerLLMValidator:
     @property
     def llm_calls_remaining(self) -> int:
         """Number of LLM calls remaining for this commit."""
-        return max(
-            0, self.config.max_llm_calls_per_commit - self._llm_calls_made
-        )
+        return max(0, self.config.max_llm_calls_per_commit - self._llm_calls_made)
 
     def reset_llm_counter(self) -> None:
         """Reset the LLM call counter (call at start of each commit)."""
@@ -177,8 +170,11 @@ class HybridScorerLLMValidator:
                     llm_rationale = f"LLM fallback: {e}"
 
             # Compute combined score
+            has_semantic = bool(
+                fp.embedding.vector and candidate.fingerprint.embedding.vector
+            )
             combined_score = self._compute_combined_score(
-                structural_score, semantic_score, llm_confidence
+                structural_score, semantic_score, llm_confidence, has_semantic
             )
 
             # Determine import path from candidate metadata
@@ -213,18 +209,12 @@ class HybridScorerLLMValidator:
 
         # AST structure hash comparison (highest weight - rename/comment invariant)
         if fp1.features.ast_structure_hash and fp2.features.ast_structure_hash:
-            if (
-                fp1.features.ast_structure_hash
-                == fp2.features.ast_structure_hash
-            ):
+            if fp1.features.ast_structure_hash == fp2.features.ast_structure_hash:
                 score += 0.4
             total_weight += 0.4
 
         # Control flow pattern similarity
-        if (
-            fp1.features.control_flow_pattern
-            or fp2.features.control_flow_pattern
-        ):
+        if fp1.features.control_flow_pattern or fp2.features.control_flow_pattern:
             cf_sim = self._string_similarity(
                 fp1.features.control_flow_pattern,
                 fp2.features.control_flow_pattern,
@@ -241,10 +231,7 @@ class HybridScorerLLMValidator:
             total_weight += 0.2
 
         # Function signature structure similarity
-        if (
-            fp1.features.function_signatures
-            or fp2.features.function_signatures
-        ):
+        if fp1.features.function_signatures or fp2.features.function_signatures:
             sig_sim = self._list_similarity(
                 fp1.features.function_signatures,
                 fp2.features.function_signatures,
@@ -268,12 +255,20 @@ class HybridScorerLLMValidator:
     def _compute_semantic_similarity(
         self, fp1: BlockFingerprint, fp2: BlockFingerprint
     ) -> float:
-        """Compute semantic similarity via embedding cosine distance."""
+        """Compute semantic similarity via embedding cosine distance.
+
+        If the candidate's embedding is empty (retrieved from store),
+        we skip this component and rely on structural + LLM scoring.
+        """
         if not fp1.embedding.vector or not fp2.embedding.vector:
             return 0.0
 
         v1 = np.array(fp1.embedding.vector, dtype=np.float32)
         v2 = np.array(fp2.embedding.vector, dtype=np.float32)
+
+        # Vectors must be same dimension
+        if len(v1) != len(v2):
+            return 0.0
 
         norm1 = np.linalg.norm(v1)
         norm2 = np.linalg.norm(v2)
@@ -290,30 +285,34 @@ class HybridScorerLLMValidator:
         structural: float,
         semantic: float,
         llm_confidence: float,
+        has_semantic: bool = True,
     ) -> float:
         """Combine scores into a single value in [0.0, 1.0].
 
-        If LLM was not invoked (confidence=0), redistribute its weight
-        to structural and semantic equally.
+        If LLM was not invoked (confidence=0), redistribute its weight.
+        If semantic is unavailable (candidate from store without embedding),
+        redistribute semantic weight to structural and LLM.
         """
-        if llm_confidence == 0.0 and self.LLM_WEIGHT > 0:
-            # Redistribute LLM weight
-            adjusted_structural_weight = self.STRUCTURAL_WEIGHT + (
-                self.LLM_WEIGHT / 2
-            )
-            adjusted_semantic_weight = self.SEMANTIC_WEIGHT + (
-                self.LLM_WEIGHT / 2
-            )
-            combined = (
-                structural * adjusted_structural_weight
-                + semantic * adjusted_semantic_weight
-            )
-        else:
-            combined = (
-                structural * self.STRUCTURAL_WEIGHT
-                + semantic * self.SEMANTIC_WEIGHT
-                + llm_confidence * self.LLM_WEIGHT
-            )
+        s_weight = self.STRUCTURAL_WEIGHT
+        e_weight = self.SEMANTIC_WEIGHT if has_semantic else 0.0
+        l_weight = self.LLM_WEIGHT
+
+        # Redistribute semantic weight if unavailable
+        if not has_semantic:
+            s_weight += self.SEMANTIC_WEIGHT / 2
+            l_weight += self.SEMANTIC_WEIGHT / 2
+
+        # Redistribute LLM weight if not invoked
+        if llm_confidence == 0.0 and l_weight > 0:
+            s_weight += l_weight / 2
+            e_weight += l_weight / 2
+            l_weight = 0.0
+
+        combined = (
+            structural * s_weight
+            + semantic * e_weight
+            + llm_confidence * l_weight
+        )
 
         return max(0.0, min(1.0, combined))
 
@@ -334,9 +333,7 @@ class HybridScorerLLMValidator:
         common = sum(1 for c1, c2 in zip(s1, s2) if c1 == c2)
         return common / max_len
 
-    def _sequence_similarity(
-        self, seq1: list[str], seq2: list[str]
-    ) -> float:
+    def _sequence_similarity(self, seq1: list[str], seq2: list[str]) -> float:
         """Compute similarity between two token sequences."""
         if not seq1 and not seq2:
             return 1.0
@@ -353,9 +350,7 @@ class HybridScorerLLMValidator:
             return 1.0
         return intersection / union
 
-    def _list_similarity(
-        self, list1: list[str], list2: list[str]
-    ) -> float:
+    def _list_similarity(self, list1: list[str], list2: list[str]) -> float:
         """Compute similarity between two lists of strings."""
         if not list1 and not list2:
             return 1.0

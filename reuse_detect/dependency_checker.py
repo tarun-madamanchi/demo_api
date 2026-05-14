@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Try Python 3.11+ stdlib tomllib, fall back to a regex parser if unavailable.
 try:
     import tomllib  # type: ignore[import-not-found]
+
     _HAS_TOMLLIB = True
 except ImportError:  # pragma: no cover - only on Python < 3.11
     _HAS_TOMLLIB = False

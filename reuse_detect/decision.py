@@ -110,9 +110,7 @@ class DecisionRenderer:
         self, block: CodeBlock, match: ValidatedMatch
     ) -> ReuseSuggestion:
         """Render a single ReuseSuggestion with all required fields."""
-        original_location = (
-            f"{block.file_path}:{block.start_line}-{block.end_line}"
-        )
+        original_location = f"{block.file_path}:{block.start_line}-{block.end_line}"
 
         # Derive existing code location from the match
         existing_location = match.indexed_id
@@ -136,12 +134,12 @@ class DecisionRenderer:
         parts = match.import_path.split("import ")
         if len(parts) > 1:
             name = parts[1].strip()
-            return f"{match.import_path}\n\n# Use {name} instead of duplicating the logic"
+            return (
+                f"{match.import_path}\n\n# Use {name} instead of duplicating the logic"
+            )
         return f"{match.import_path}\n\n# Reuse the existing implementation"
 
-    def _build_diff_preview(
-        self, block: CodeBlock, match: ValidatedMatch
-    ) -> str:
+    def _build_diff_preview(self, block: CodeBlock, match: ValidatedMatch) -> str:
         """Build a diff preview showing what would change."""
         lines = [
             f"- # Your code in {block.file_path}:{block.start_line}",

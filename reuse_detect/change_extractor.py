@@ -67,9 +67,7 @@ class ChangeExtractor:
         # Check if content is only comments and whitespace
         lines = block.content.strip().splitlines()
         meaningful_lines = [
-            line
-            for line in lines
-            if line.strip() and not line.strip().startswith("#")
+            line for line in lines if line.strip() and not line.strip().startswith("#")
         ]
         if not meaningful_lines:
             return True
@@ -145,10 +143,10 @@ class ChangeExtractor:
         for line in diff_output.splitlines():
             if line.startswith("diff --git"):
                 if current_file is not None:
-                    change_type = ChangeType.ADDED if is_new_file else ChangeType.MODIFIED
-                    files.append(
-                        (Path(current_file), changed_lines, change_type)
+                    change_type = (
+                        ChangeType.ADDED if is_new_file else ChangeType.MODIFIED
                     )
+                    files.append((Path(current_file), changed_lines, change_type))
                 # Extract file path from "diff --git a/path b/path"
                 parts = line.split(" b/", 1)
                 current_file = parts[1] if len(parts) > 1 else None
@@ -223,9 +221,7 @@ class ChangeExtractor:
 
                 # Extract the complete definition
                 source_lines = source.splitlines()
-                block_content = "\n".join(
-                    source_lines[start_line - 1 : end_line]
-                )
+                block_content = "\n".join(source_lines[start_line - 1 : end_line])
 
                 # Normalize the content
                 normalized_content = self.normalize(block_content)
@@ -235,9 +231,7 @@ class ChangeExtractor:
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                     else None
                 )
-                class_name = (
-                    node.name if isinstance(node, ast.ClassDef) else None
-                )
+                class_name = node.name if isinstance(node, ast.ClassDef) else None
 
                 blocks.append(
                     CodeBlock(

@@ -15,9 +15,12 @@ class LocalEmbeddingProvider:
 
     Produces deterministic embeddings based on normalized code tokens.
     No API keys or network access required.
+
+    Supports configurable dimension to match the dimension of API-based
+    providers when used as a fallback.
     """
 
-    def __init__(self, dimension: int = 256):
+    def __init__(self, dimension: int = 1536):
         self._dimension = dimension
         self._model_id = "local-token-hash"
 
@@ -60,11 +63,39 @@ class LocalEmbeddingProvider:
 
         # Python keywords and builtins to keep as-is
         keywords = {
-            "def", "class", "return", "if", "else", "elif", "for", "while",
-            "try", "except", "finally", "with", "as", "import", "from",
-            "raise", "yield", "async", "await", "lambda", "pass", "break",
-            "continue", "and", "or", "not", "in", "is", "None", "True",
-            "False", "self", "cls",
+            "def",
+            "class",
+            "return",
+            "if",
+            "else",
+            "elif",
+            "for",
+            "while",
+            "try",
+            "except",
+            "finally",
+            "with",
+            "as",
+            "import",
+            "from",
+            "raise",
+            "yield",
+            "async",
+            "await",
+            "lambda",
+            "pass",
+            "break",
+            "continue",
+            "and",
+            "or",
+            "not",
+            "in",
+            "is",
+            "None",
+            "True",
+            "False",
+            "self",
+            "cls",
         }
 
         # Split into words and operators
@@ -109,9 +140,7 @@ class LocalEmbeddingProvider:
         for token, count in counts.items():
             # Use multiple hash functions for better distribution
             for seed in range(3):
-                h = int(
-                    hashlib.md5(f"{seed}:{token}".encode()).hexdigest(), 16
-                )
+                h = int(hashlib.md5(f"{seed}:{token}".encode()).hexdigest(), 16)
                 idx = h % self._dimension
                 sign = 1.0 if (h // self._dimension) % 2 == 0 else -1.0
                 # TF component (log-scaled)

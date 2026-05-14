@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from reuse_detect.models import (
+    BlockFingerprint,
     ChangeType,
     CodeBlock,
     CodeEmbedding,
     CodeFeatures,
-    BlockFingerprint,
     Decision,
     IndexSource,
     ReuseSuggestion,

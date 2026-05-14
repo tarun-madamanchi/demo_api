@@ -37,7 +37,7 @@ class EmbeddingProvider(Protocol):
 
 
 class GitHubModelsEmbeddingProvider:
-    """Embedding provider using GitHub Models API."""
+    """Embedding provider using GitHub Models API with local fallback."""
 
     def __init__(
         self,
@@ -47,6 +47,15 @@ class GitHubModelsEmbeddingProvider:
         self._model = model
         self._api_token = api_token
         self._dimension = 1536  # Default for text-embedding-3-small
+        self._fallback: "LocalEmbeddingProvider | None" = None
+
+    def _get_fallback(self):
+        """Lazy-load the local fallback provider."""
+        if self._fallback is None:
+            from .local_embedding import LocalEmbeddingProvider
+
+            self._fallback = LocalEmbeddingProvider(dimension=self._dimension)
+        return self._fallback
 
     @property
     def model_id(self) -> str:
@@ -57,40 +66,61 @@ class GitHubModelsEmbeddingProvider:
         return self._dimension
 
     def embed(self, text: str) -> list[float]:
-        """Generate embedding via GitHub Models API."""
+        """Generate embedding via GitHub Models API, with local fallback."""
         import httpx
 
-        response = httpx.post(
-            "https://models.github.ai/inference/embeddings",
-            headers={
-                "Authorization": f"Bearer {self._api_token}",
-                "Content-Type": "application/json",
-            },
-            json={"input": text, "model": self._model},
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data["data"][0]["embedding"]
+        if not self._api_token:
+            logger.warning("No API token for embeddings, using local fallback")
+            return self._get_fallback().embed(text)
+
+        try:
+            response = httpx.post(
+                "https://models.github.ai/inference/embeddings",
+                headers={
+                    "Authorization": f"Bearer {self._api_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"input": text, "model": self._model},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["embedding"]
+        except Exception as e:
+            logger.warning(
+                "GitHub Models embedding API failed: %s. Using local fallback.", e
+            )
+            return self._get_fallback().embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts in one API call."""
         import httpx
 
-        response = httpx.post(
-            "https://models.github.ai/inference/embeddings",
-            headers={
-                "Authorization": f"Bearer {self._api_token}",
-                "Content-Type": "application/json",
-            },
-            json={"input": texts, "model": self._model},
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        # Sort by index to maintain order
-        sorted_data = sorted(data["data"], key=lambda x: x["index"])
-        return [item["embedding"] for item in sorted_data]
+        if not self._api_token:
+            logger.warning("No API token for embeddings, using local fallback")
+            return self._get_fallback().embed_batch(texts)
+
+        try:
+            response = httpx.post(
+                "https://models.github.ai/inference/embeddings",
+                headers={
+                    "Authorization": f"Bearer {self._api_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"input": texts, "model": self._model},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            # Sort by index to maintain order
+            sorted_data = sorted(data["data"], key=lambda x: x["index"])
+            return [item["embedding"] for item in sorted_data]
+        except Exception as e:
+            logger.warning(
+                "GitHub Models batch embedding API failed: %s. Using local fallback.",
+                e,
+            )
+            return self._get_fallback().embed_batch(texts)
 
 
 class FeatureEmbeddingBuilder:
@@ -159,17 +189,13 @@ class FeatureEmbeddingBuilder:
             tree = ast.parse(source)
         except SyntaxError:
             # Return empty features for unparseable code
-            features.ast_structure_hash = hashlib.md5(
-                source.encode()
-            ).hexdigest()
+            features.ast_structure_hash = hashlib.md5(source.encode()).hexdigest()
             return features
 
         # Walk the AST once, collecting all features
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                features.function_signatures.append(
-                    self._get_function_signature(node)
-                )
+                features.function_signatures.append(self._get_function_signature(node))
                 if node.decorator_list:
                     for dec in node.decorator_list:
                         features.decorators.append(ast.unparse(dec))
@@ -178,15 +204,11 @@ class FeatureEmbeddingBuilder:
                 # Extract parameter types
                 for arg in node.args.args:
                     if arg.annotation:
-                        features.parameter_types.append(
-                            ast.unparse(arg.annotation)
-                        )
+                        features.parameter_types.append(ast.unparse(arg.annotation))
 
             elif isinstance(node, ast.ClassDef):
                 bases = [ast.unparse(b) for b in node.bases]
-                features.class_hierarchy.append(
-                    f"{node.name}({', '.join(bases)})"
-                )
+                features.class_hierarchy.append(f"{node.name}({', '.join(bases)})")
                 if node.decorator_list:
                     for dec in node.decorator_list:
                         features.decorators.append(ast.unparse(dec))

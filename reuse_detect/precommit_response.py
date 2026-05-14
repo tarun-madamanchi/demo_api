@@ -16,9 +16,7 @@ class PrecommitResponse:
         """Initialize with an optional output stream (defaults to stderr)."""
         self.output_stream = output_stream or sys.stderr
 
-    def respond(
-        self, decision: Decision, suggestions: list[ReuseSuggestion]
-    ) -> int:
+    def respond(self, decision: Decision, suggestions: list[ReuseSuggestion]) -> int:
         """Write suggestions to stderr. Return 0 on pass/warn, non-zero on block.
 
         - BLOCK: writes suggestions to stderr, returns exit code 1
@@ -40,12 +38,8 @@ class PrecommitResponse:
 
     def _write_block_message(self, suggestions: list[ReuseSuggestion]) -> None:
         """Write a BLOCK message with suggestions to stderr."""
-        self.output_stream.write(
-            "\n" + "=" * 70 + "\n"
-        )
-        self.output_stream.write(
-            "🚫 COMMIT BLOCKED: Duplicate code detected\n"
-        )
+        self.output_stream.write("\n" + "=" * 70 + "\n")
+        self.output_stream.write("🚫 COMMIT BLOCKED: Duplicate code detected\n")
         self.output_stream.write("=" * 70 + "\n\n")
         self.output_stream.write(
             "The following code duplicates existing library/codebase code.\n"
@@ -61,12 +55,8 @@ class PrecommitResponse:
 
     def _write_warn_message(self, suggestions: list[ReuseSuggestion]) -> None:
         """Write a WARN message with suggestions to stderr."""
-        self.output_stream.write(
-            "\n" + "-" * 70 + "\n"
-        )
-        self.output_stream.write(
-            "⚠️  WARNING: Potential code duplication detected\n"
-        )
+        self.output_stream.write("\n" + "-" * 70 + "\n")
+        self.output_stream.write("⚠️  WARNING: Potential code duplication detected\n")
         self.output_stream.write("-" * 70 + "\n\n")
         self.output_stream.write(
             "Consider reusing the following existing implementations:\n\n"
@@ -74,9 +64,7 @@ class PrecommitResponse:
 
         self._write_suggestions(suggestions)
 
-        self.output_stream.write(
-            "\nCommit will proceed, but consider refactoring.\n"
-        )
+        self.output_stream.write("\nCommit will proceed, but consider refactoring.\n")
 
     def _write_suggestions(self, suggestions: list[ReuseSuggestion]) -> None:
         """Write formatted suggestions."""
@@ -85,16 +73,10 @@ class PrecommitResponse:
             self.output_stream.write(
                 f"      Matches: {suggestion.existing_code_location}\n"
             )
-            self.output_stream.write(
-                f"      Confidence: {suggestion.confidence:.0%}\n"
-            )
-            self.output_stream.write(
-                f"      Import: {suggestion.import_statement}\n"
-            )
+            self.output_stream.write(f"      Confidence: {suggestion.confidence:.0%}\n")
+            self.output_stream.write(f"      Import: {suggestion.import_statement}\n")
             self.output_stream.write(
                 f"      Usage:\n        {suggestion.usage_example}\n"
             )
-            self.output_stream.write(
-                f"      Reason: {suggestion.explanation}\n"
-            )
+            self.output_stream.write(f"      Reason: {suggestion.explanation}\n")
             self.output_stream.write("\n")

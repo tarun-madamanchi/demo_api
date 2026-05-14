@@ -16,7 +16,9 @@ from reuse_detect.models import (
 from reuse_detect.vector_store import FAISSVectorStore
 
 
-def make_fingerprint(vector: list[float], content_hash: str = "hash") -> BlockFingerprint:
+def make_fingerprint(
+    vector: list[float], content_hash: str = "hash"
+) -> BlockFingerprint:
     return BlockFingerprint(
         block=CodeBlock(
             file_path=Path("test.py"),
@@ -37,9 +39,7 @@ class TestFAISSVectorStore:
 
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.store = FAISSVectorStore(
-            store_path=Path(self.tmpdir), dimension=4
-        )
+        self.store = FAISSVectorStore(store_path=Path(self.tmpdir), dimension=4)
 
     def test_upsert_and_query(self):
         fp = make_fingerprint([1.0, 0.0, 0.0, 0.0], "hash1")
@@ -113,9 +113,7 @@ class TestFAISSVectorStore:
         self.store.save()
 
         # Create new store and load
-        new_store = FAISSVectorStore(
-            store_path=Path(self.tmpdir), dimension=4
-        )
+        new_store = FAISSVectorStore(store_path=Path(self.tmpdir), dimension=4)
         new_store.load()
 
         results = new_store.query([1.0, 0.0, 0.0, 0.0], top_k=5)

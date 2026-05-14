@@ -87,6 +87,10 @@ def detect_reusable_code(
     scorer = HybridScorerLLMValidator(config, llm_provider)
     renderer = DecisionRenderer(config)
 
+    logger.info(
+        "Vector store loaded with %d entries", store.size
+    )
+
     # Stage 2: Extract changed blocks
     try:
         blocks = extractor.extract(base_ref=base_ref)
@@ -161,6 +165,7 @@ def ensure_index_fresh(
     config: DetectionConfig,
     embedding_provider: EmbeddingProvider,
     repo_root: Path | None = None,
+    api_token: str | None = None,
 ) -> None:
     """Ensure the vector store index is up-to-date before running detection.
 
@@ -176,7 +181,28 @@ def ensure_index_fresh(
     )
     store.load()
 
-    indexer = UnifiedIndexer(config, builder, store)
+    indexer = UnifiedIndexer(config, builder, store, api_token=api_token)
+
+    # Always reindex local on first run or if store is empty
+    if store.size == 0:
+        logger.info("Vector store is empty. Running full initial indexing.")
+        indexer.reindex_local(root)
+        indexable_repos = get_indexable_repos(config, root)
+        if indexable_repos:
+            repo_urls = [r.url for r in indexable_repos]
+            logger.info("Indexing %d GitHub repos: %s", len(repo_urls), repo_urls)
+            indexed = indexer.reindex_github(repo_urls)
+            if indexed == 0:
+                logger.warning(
+                    "GitHub indexing returned 0 blocks. Check token and repo access."
+                )
+        else:
+            logger.warning(
+                "No GitHub repos matched project dependencies. "
+                "Configured repos: %s",
+                [r.url for r in config.github_repositories],
+            )
+        return
 
     # Check if GitHub index needs refreshing
     if indexer.should_refresh_github():
@@ -193,6 +219,7 @@ def run_precommit(
     llm_provider: LLMProvider | None = None,
     repo_root: Path | None = None,
     base_ref: str = "HEAD",
+    api_token: str | None = None,
 ) -> int:
     """Run the full pre-commit pipeline and return the exit code.
 
@@ -201,9 +228,13 @@ def run_precommit(
     """
     # Ensure index is fresh before detection
     try:
-        ensure_index_fresh(config, embedding_provider, repo_root)
+        ensure_index_fresh(config, embedding_provider, repo_root, api_token=api_token)
     except Exception as e:
-        logger.warning("Index refresh failed, continuing with existing index: %s", e)
+        logger.error(
+            "Index refresh failed: %s. Detection will use existing index "
+            "(which may be empty).",
+            e,
+        )
 
     decision, suggestions = detect_reusable_code(
         config=config,

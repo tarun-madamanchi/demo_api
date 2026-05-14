@@ -30,9 +30,7 @@ class TestDetectionConfig:
         assert config.block_threshold == 0.85  # defaults
 
     def test_from_file_with_overrides(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("block_threshold: 0.90\nmin_block_lines: 5\n")
             f.flush()
 

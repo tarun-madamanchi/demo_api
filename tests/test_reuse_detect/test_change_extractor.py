@@ -107,23 +107,17 @@ class TestShouldProcessFile:
     """Test file pattern matching."""
 
     def test_python_file_included(self):
-        config = DetectionConfig(
-            include_patterns=["*.py"], exclude_patterns=["test_*"]
-        )
+        config = DetectionConfig(include_patterns=["*.py"], exclude_patterns=["test_*"])
         extractor = ChangeExtractor(config)
         assert extractor._should_process_file(Path("src/main.py")) is True
 
     def test_test_file_excluded(self):
-        config = DetectionConfig(
-            include_patterns=["*.py"], exclude_patterns=["test_*"]
-        )
+        config = DetectionConfig(include_patterns=["*.py"], exclude_patterns=["test_*"])
         extractor = ChangeExtractor(config)
         assert extractor._should_process_file(Path("test_main.py")) is False
 
     def test_non_python_file_excluded(self):
-        config = DetectionConfig(
-            include_patterns=["*.py"], exclude_patterns=[]
-        )
+        config = DetectionConfig(include_patterns=["*.py"], exclude_patterns=[])
         extractor = ChangeExtractor(config)
         assert extractor._should_process_file(Path("readme.md")) is False
 

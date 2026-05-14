@@ -40,10 +40,12 @@ class UnifiedIndexer:
         config: DetectionConfig,
         builder: FeatureEmbeddingBuilder,
         store: FAISSVectorStore,
+        api_token: str | None = None,
     ):
         self.config = config
         self.builder = builder
         self.store = store
+        self.api_token = api_token
         self._last_github_refresh: datetime | None = None
         self._metadata_path = config.cache_dir / "index_metadata.json"
 
@@ -208,7 +210,7 @@ class UnifiedIndexer:
     def _fetch_github_repo_blocks(self, repo_url: str) -> list[CodeBlock]:
         """Fetch a GitHub repository and extract code blocks.
 
-        Uses the GitHub API or git clone to fetch repository contents.
+        Uses the GitHub API with authentication to fetch repository contents.
         """
         try:
             import httpx
@@ -221,12 +223,39 @@ class UnifiedIndexer:
                 logger.warning("Invalid repo URL format: %s", repo_url)
                 return []
 
-            # Use GitHub API to list Python files
-            # This is a simplified implementation
-            api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1"
-            response = httpx.get(api_url, timeout=30.0)
+            # Build headers with authentication
+            headers: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
+            if self.api_token:
+                headers["Authorization"] = f"Bearer {self.api_token}"
+            else:
+                logger.warning(
+                    "No API token available for GitHub API calls. "
+                    "Private repos will not be accessible."
+                )
 
-            if response.status_code != 200:
+            # Use GitHub API to list Python files
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1"
+            response = httpx.get(api_url, headers=headers, timeout=30.0)
+
+            if response.status_code == 401:
+                logger.error(
+                    "GitHub API authentication failed for %s. Check GITHUB_TOKEN.",
+                    repo_url,
+                )
+                return []
+            elif response.status_code == 403:
+                logger.error(
+                    "GitHub API access forbidden for %s. Token may lack repo scope.",
+                    repo_url,
+                )
+                return []
+            elif response.status_code == 404:
+                logger.error(
+                    "GitHub repo not found: %s. Check URL and token permissions.",
+                    repo_url,
+                )
+                return []
+            elif response.status_code != 200:
                 logger.warning(
                     "GitHub API returned %d for %s",
                     response.status_code,
@@ -241,25 +270,45 @@ class UnifiedIndexer:
                 if item["path"].endswith(".py") and item["type"] == "blob"
             ]
 
+            logger.info(
+                "Found %d Python files in %s/%s", len(python_files), owner, repo
+            )
+
             blocks: list[CodeBlock] = []
             for file_path in python_files:
-                content_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{file_path}"
-                content_response = httpx.get(content_url, timeout=30.0)
+                content_url = (
+                    f"https://raw.githubusercontent.com/{owner}/{repo}/main/{file_path}"
+                )
+                # raw.githubusercontent.com also needs auth for private repos
+                content_headers: dict[str, str] = {}
+                if self.api_token:
+                    content_headers["Authorization"] = f"token {self.api_token}"
+
+                content_response = httpx.get(
+                    content_url, headers=content_headers, timeout=30.0
+                )
                 if content_response.status_code == 200:
                     file_blocks = self._parse_source_to_blocks(
                         content_response.text, Path(file_path)
                     )
                     blocks.extend(file_blocks)
+                else:
+                    logger.debug(
+                        "Failed to fetch %s (status %d)",
+                        file_path,
+                        content_response.status_code,
+                    )
 
+            logger.info(
+                "Extracted %d code blocks from %s/%s", len(blocks), owner, repo
+            )
             return blocks
 
         except Exception as e:
             logger.warning("Failed to fetch GitHub repo %s: %s", repo_url, e)
             return []
 
-    def _parse_source_to_blocks(
-        self, source: str, file_path: Path
-    ) -> list[CodeBlock]:
+    def _parse_source_to_blocks(self, source: str, file_path: Path) -> list[CodeBlock]:
         """Parse source code into CodeBlock objects for functions and classes."""
         blocks: list[CodeBlock] = []
 
@@ -286,9 +335,7 @@ class UnifiedIndexer:
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                     else None
                 )
-                class_name = (
-                    node.name if isinstance(node, ast.ClassDef) else None
-                )
+                class_name = node.name if isinstance(node, ast.ClassDef) else None
 
                 blocks.append(
                     CodeBlock(
@@ -342,9 +389,7 @@ class UnifiedIndexer:
 
         return python_files
 
-    def _extract_blocks_from_file(
-        self, file_path: Path, root: Path
-    ) -> list[CodeBlock]:
+    def _extract_blocks_from_file(self, file_path: Path, root: Path) -> list[CodeBlock]:
         """Extract code blocks from a single file."""
         try:
             source = file_path.read_text(encoding="utf-8")
@@ -377,9 +422,7 @@ class UnifiedIndexer:
         """Remove all entries for a file from the index."""
         prefix = f"local:{file_path}"
         ids_to_remove = [
-            id_
-            for id_ in self.store._id_to_position.keys()
-            if id_.startswith(prefix)
+            id_ for id_ in self.store._id_to_position.keys() if id_.startswith(prefix)
         ]
         for id_ in ids_to_remove:
             self.store.delete(id_)

@@ -12,19 +12,24 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .config import DetectionConfig
 from .dependency_checker import DependencyChecker
 from .feature_builder import GitHubModelsEmbeddingProvider
 from .indexer import UnifiedIndexer
+from .local_embedding import LocalEmbeddingProvider
 from .models import Decision
 from .pipeline import detect_reusable_code, get_indexable_repos, run_precommit
 from .precommit_response import PrecommitResponse
 from .scorer import GitHubModelsLLMProvider
 from .vector_store import FAISSVectorStore
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# Load .env from the package directory (where the token lives),
+# then also try the repo root .env as a fallback.
+_package_dir = Path(__file__).resolve().parent
+load_dotenv(_package_dir / ".env")
+load_dotenv()  # Also check CWD/.env as fallback
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -73,7 +78,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose logging",
     )
@@ -109,15 +115,24 @@ def main(argv: list[str] | None = None) -> int:
     # Get API token
     api_token = get_api_token()
 
-    # Initialize providers
-    embedding_provider = GitHubModelsEmbeddingProvider(api_token=api_token)
+    if not api_token:
+        logging.getLogger(__name__).warning(
+            "No GITHUB_TOKEN found. Embedding API calls will fail. "
+            "Falling back to local embedding provider."
+        )
+
+    # Initialize providers — use GitHub Models API if token available,
+    # otherwise fall back to local offline embeddings.
+    if api_token:
+        embedding_provider = GitHubModelsEmbeddingProvider(api_token=api_token)
+    else:
+        embedding_provider = LocalEmbeddingProvider()
+
     llm_provider = GitHubModelsLLMProvider(api_token=api_token) if api_token else None
 
     # Handle reindex commands
     if args.reindex or args.reindex_local or args.reindex_github:
-        return _handle_reindex(
-            config, embedding_provider, args
-        )
+        return _handle_reindex(config, embedding_provider, args, api_token=api_token)
 
     # Default: run staged detection (pre-commit mode)
     if args.staged or not any([args.reindex, args.reindex_local, args.reindex_github]):
@@ -126,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             embedding_provider=embedding_provider,
             llm_provider=llm_provider,
             base_ref=args.base_ref,
+            api_token=api_token,
         )
 
     return 0
@@ -135,6 +151,7 @@ def _handle_reindex(
     config: DetectionConfig,
     embedding_provider,
     args,
+    api_token: str | None = None,
 ) -> int:
     """Handle re-indexing commands.
 
@@ -151,7 +168,7 @@ def _handle_reindex(
     )
     store.load()
 
-    indexer = UnifiedIndexer(config, builder, store)
+    indexer = UnifiedIndexer(config, builder, store, api_token=api_token)
 
     if args.reindex:
         # Full reindex: local + dependency-gated GitHub repos
