@@ -42,7 +42,7 @@ class PrecommitResponse:
         self.output_stream.write("🚫 COMMIT BLOCKED: Duplicate code detected\n")
         self.output_stream.write("=" * 70 + "\n\n")
         self.output_stream.write(
-            "The following code duplicates existing library/codebase code.\n"
+            "Your code duplicates existing library/codebase code.\n"
             "Please reuse the existing implementation instead.\n\n"
         )
 
@@ -59,7 +59,7 @@ class PrecommitResponse:
         self.output_stream.write("⚠️  WARNING: Potential code duplication detected\n")
         self.output_stream.write("-" * 70 + "\n\n")
         self.output_stream.write(
-            "Consider reusing the following existing implementations:\n\n"
+            "Consider reusing these existing implementations:\n\n"
         )
 
         self._write_suggestions(suggestions)
@@ -67,16 +67,14 @@ class PrecommitResponse:
         self.output_stream.write("\nCommit will proceed, but consider refactoring.\n")
 
     def _write_suggestions(self, suggestions: list[ReuseSuggestion]) -> None:
-        """Write formatted suggestions."""
+        """Write formatted suggestions — clean and actionable."""
         for i, suggestion in enumerate(suggestions, 1):
             self.output_stream.write(f"  [{i}] {suggestion.original_code_location}\n")
-            self.output_stream.write(
-                f"      Matches: {suggestion.existing_code_location}\n"
-            )
             self.output_stream.write(f"      Confidence: {suggestion.confidence:.0%}\n")
-            self.output_stream.write(f"      Import: {suggestion.import_statement}\n")
-            self.output_stream.write(
-                f"      Usage:\n        {suggestion.usage_example}\n"
-            )
-            self.output_stream.write(f"      Reason: {suggestion.explanation}\n")
+            self.output_stream.write(f"      Use instead: {suggestion.import_statement}\n")
+            # Truncate reason to first sentence for readability
+            reason = suggestion.explanation
+            if ". " in reason:
+                reason = reason[: reason.index(". ") + 1]
+            self.output_stream.write(f"      Reason: {reason}\n")
             self.output_stream.write("\n")

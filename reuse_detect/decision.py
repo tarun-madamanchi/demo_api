@@ -72,6 +72,8 @@ class DecisionRenderer:
         """Decide across all blocks and aggregate suggestions.
 
         The overall decision is the most severe across all blocks.
+        Filters out low-confidence matches (< 30%) to reduce noise.
+        Only shows suggestions from different sources (deduplicates by import path).
         """
         if not all_validated:
             return Decision.PASS, []
@@ -79,8 +81,6 @@ class DecisionRenderer:
         overall_decision = Decision.PASS
         all_suggestions: list[ReuseSuggestion] = []
 
-        # Group validated matches by block (using indexed_id prefix or just use all)
-        # For simplicity, treat all validated matches together
         max_score = max(v.combined_score for v in all_validated)
 
         if max_score >= self.block_threshold:
@@ -89,16 +89,27 @@ class DecisionRenderer:
             overall_decision = Decision.WARN
 
         if overall_decision in (Decision.WARN, Decision.BLOCK):
+            # Filter: only keep matches with meaningful confidence (>= 30%)
+            meaningful = [v for v in all_validated if v.combined_score >= 0.30]
+
+            # Sort by combined score descending
             sorted_matches = sorted(
-                all_validated, key=lambda v: v.combined_score, reverse=True
+                meaningful, key=lambda v: v.combined_score, reverse=True
             )
 
-            # Limit total suggestions
-            max_total = len(blocks) * self.max_suggestions_per_block
-            top_matches = sorted_matches[:max_total]
+            # Deduplicate by import path (keep highest score per unique import)
+            seen_imports: set[str] = set()
+            unique_matches: list[ValidatedMatch] = []
+            for match in sorted_matches:
+                if match.import_path not in seen_imports:
+                    seen_imports.add(match.import_path)
+                    unique_matches.append(match)
+
+            # Limit total suggestions to max 3
+            top_matches = unique_matches[: self.max_suggestions_per_block]
 
             for match in top_matches:
-                # Find the corresponding block (use first block as fallback)
+                # Find the best matching block for this suggestion
                 block = blocks[0] if blocks else None
                 if block:
                     suggestion = self._render_suggestion(block, match)

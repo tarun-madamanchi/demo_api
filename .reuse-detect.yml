@@ -12,8 +12,8 @@ github_repositories:
 
 # Similarity thresholds
 similarity_threshold: 0.75
-block_threshold: 0.85
-warn_threshold: 0.65
+block_threshold: 0.80
+warn_threshold: 0.55
 
 # Minimum number of lines for a code block to be analyzed
 min_block_lines: 3

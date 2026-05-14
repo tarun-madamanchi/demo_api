@@ -267,4 +267,34 @@ class ChangeExtractor:
                     )
                 )
 
+        # Remove parent blocks when a more specific child block exists.
+        # If a class contains a function that was also extracted, drop the class
+        # block — the function is a more precise unit for comparison.
+        if len(blocks) > 1:
+            blocks = self._remove_parent_blocks(blocks)
+
         return blocks
+
+    def _remove_parent_blocks(self, blocks: list[CodeBlock]) -> list[CodeBlock]:
+        """Remove blocks that fully contain other blocks.
+
+        When a class and its method are both extracted, keep only the method
+        since it's a more precise unit for reuse comparison.
+        """
+        # Sort by size (smallest first)
+        sorted_blocks = sorted(blocks, key=lambda b: b.line_count)
+        result: list[CodeBlock] = []
+
+        for block in sorted_blocks:
+            # Check if this block fully contains any already-accepted block
+            is_parent = any(
+                block.start_line <= other.start_line
+                and block.end_line >= other.end_line
+                and block is not other
+                for other in sorted_blocks
+                if other.line_count < block.line_count
+            )
+            if not is_parent:
+                result.append(block)
+
+        return result

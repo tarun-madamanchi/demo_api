@@ -46,12 +46,12 @@ class GitHubModelsEmbeddingProvider:
 
     def __init__(
         self,
-        model: str = "text-embedding-3-small",
+        model: str = "text-embedding-3-large",
         api_token: str | None = None,
     ):
         self._model = model
         self._api_token = api_token
-        self._dimension = 1536  # Default for text-embedding-3-small
+        self._dimension = 3072  # Default for text-embedding-3-large
         self._fallback: "LocalEmbeddingProvider | None" = None
         self._api_disabled = False  # Set True after first network/SSL failure
 
@@ -97,31 +97,67 @@ class GitHubModelsEmbeddingProvider:
             return self._get_fallback().embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for multiple texts in one API call."""
+        """Generate embeddings for multiple texts, chunked to avoid timeouts.
+
+        Large batches can cause connection resets on corporate proxies.
+        Split into chunks of 10 with retry for reliability.
+        """
+        import time
+
         import httpx
 
         if not self._api_token or self._api_disabled:
             return self._get_fallback().embed_batch(texts)
 
-        try:
-            response = httpx.post(
-                "https://models.github.ai/inference/embeddings",
-                headers={
-                    "Authorization": f"Bearer {self._api_token}",
-                    "Content-Type": "application/json",
-                },
-                json={"input": texts, "model": self._model},
-                timeout=60.0,
-                verify=False,
-            )
-            response.raise_for_status()
-            data = response.json()
-            # Sort by index to maintain order
-            sorted_data = sorted(data["data"], key=lambda x: x["index"])
-            return [item["embedding"] for item in sorted_data]
-        except Exception as e:
-            self._handle_api_failure(e)
-            return self._get_fallback().embed_batch(texts)
+        CHUNK_SIZE = 10
+        MAX_RETRIES = 3
+        all_embeddings: list[list[float]] = []
+
+        for i in range(0, len(texts), CHUNK_SIZE):
+            chunk = texts[i : i + CHUNK_SIZE]
+            success = False
+
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = httpx.post(
+                        "https://models.github.ai/inference/embeddings",
+                        headers={
+                            "Authorization": f"Bearer {self._api_token}",
+                            "Content-Type": "application/json",
+                        },
+                        json={"input": chunk, "model": self._model},
+                        timeout=60.0,
+                        verify=False,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    sorted_data = sorted(data["data"], key=lambda x: x["index"])
+                    all_embeddings.extend([item["embedding"] for item in sorted_data])
+                    success = True
+                    break
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        logger.warning(
+                            "Embedding batch %d failed (attempt %d/%d): %s. Retrying in 3s...",
+                            i // CHUNK_SIZE,
+                            attempt + 1,
+                            MAX_RETRIES,
+                            e,
+                        )
+                        time.sleep(3)
+                    else:
+                        logger.warning(
+                            "Embedding batch %d failed after %d retries: %s. Using fallback.",
+                            i // CHUNK_SIZE,
+                            MAX_RETRIES,
+                            e,
+                        )
+
+            if not success:
+                # Only fall back for this specific chunk
+                all_embeddings.extend(self._get_fallback().embed_batch(chunk))
+
+        return all_embeddings
 
     def _handle_api_failure(self, error: Exception) -> None:
         """Handle API failure — disable API on network/SSL errors for session."""

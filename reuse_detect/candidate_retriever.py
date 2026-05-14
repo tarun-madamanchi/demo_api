@@ -54,8 +54,13 @@ class CandidateRetriever:
 
         candidates: list[SourceTaggedCandidate] = []
         for indexed_id, distance, source, metadata in results:
-            # Skip self-matches (same content hash as the query)
-            if metadata.get("content_hash") == fp.content_hash:
+            # Skip self-matches: only filter out LOCAL entries with the same
+            # content hash. NEVER skip GitHub library matches — finding an
+            # exact copy in the library is exactly what we want to detect!
+            if (
+                metadata.get("content_hash") == fp.content_hash
+                and source == IndexSource.LOCAL_CODEBASE
+            ):
                 continue
 
             # Reconstruct a full fingerprint from stored metadata

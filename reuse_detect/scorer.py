@@ -38,7 +38,7 @@ class GitHubModelsLLMProvider:
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "gpt-4.1-mini",
         api_token: str | None = None,
     ):
         self._model = model
@@ -190,12 +190,11 @@ class HybridScorerLLMValidator:
             llm_confidence = 0.0
             llm_rationale = "LLM not invoked (pre-filtered)"
 
-            # Only invoke LLM on top candidates that pass a minimum bar
+            # Only invoke LLM on top candidates
             should_call_llm = (
                 self.llm_provider
                 and self._llm_calls_made < self.config.max_llm_calls_per_commit
                 and idx < self.MAX_LLM_CANDIDATES_PER_BLOCK
-                and (structural_score + semantic_score) / 2.0 >= 0.15
             )
 
             if should_call_llm:
@@ -232,11 +231,13 @@ class HybridScorerLLMValidator:
         self,
         source_code: str,
         candidate_code: str,
-        max_retries: int = 2,
+        max_retries: int = 1,
     ) -> tuple[float, str]:
         """Call LLM with retry on 429 rate-limit errors.
 
         Respects the Retry-After header from the API response.
+        Uses a shorter wait (5s) to avoid blocking the pre-commit too long.
+        If still rate-limited after retry, returns 0 gracefully.
         """
         import time
 
@@ -252,8 +253,8 @@ class HybridScorerLLMValidator:
             except Exception as e:
                 error_str = str(e)
                 if "429" in error_str and attempt < max_retries:
-                    # Extract Retry-After if possible, default to 30s
-                    wait_time = 30
+                    # Wait a short time before retry (don't block pre-commit too long)
+                    wait_time = 5
                     logger.info(
                         "Rate limited (attempt %d/%d). Waiting %ds before retry...",
                         attempt + 1,
@@ -262,6 +263,14 @@ class HybridScorerLLMValidator:
                     )
                     time.sleep(wait_time)
                     continue
+                elif "429" in error_str:
+                    # Rate limited and out of retries — stop calling LLM entirely
+                    # to avoid wasting time on further 429s
+                    self._llm_calls_made = self.config.max_llm_calls_per_commit
+                    logger.warning(
+                        "Rate limit exhausted. Disabling LLM for remaining candidates."
+                    )
+                    return 0.0, "LLM rate-limited (budget exhausted)"
                 else:
                     logger.warning("LLM validation failed: %s", e)
                     return 0.0, f"LLM fallback: {e}"
@@ -361,27 +370,49 @@ class HybridScorerLLMValidator:
     ) -> float:
         """Combine scores into a single value in [0.0, 1.0].
 
-        If LLM was not invoked (confidence=0), redistribute its weight.
-        If semantic is unavailable (candidate from store without embedding),
-        redistribute semantic weight to structural and LLM.
+        When the LLM returns high confidence (>0.7), it's the strongest
+        signal — it means the code is logically equivalent. In that case,
+        boost the LLM weight so the combined score reflects the LLM's
+        assessment more strongly.
 
-        When both LLM and semantic are unavailable, structural score
-        becomes the sole signal — this is the common case in corporate
-        environments where external APIs are blocked.
+        If LLM was not invoked (confidence=0), redistribute its weight
+        proportionally between structural and semantic.
         """
         s_weight = self.STRUCTURAL_WEIGHT
         e_weight = self.SEMANTIC_WEIGHT if has_semantic else 0.0
         l_weight = self.LLM_WEIGHT
 
-        # If semantic is unavailable, give its weight to structural
+        # If semantic is unavailable, split its weight
         if not has_semantic:
-            s_weight += self.SEMANTIC_WEIGHT
+            s_weight += self.SEMANTIC_WEIGHT * 0.5
+            l_weight += self.SEMANTIC_WEIGHT * 0.5
 
-        # If LLM is not invoked, give its weight to structural
-        # (structural is the most reliable signal without external APIs)
+        # If LLM is not invoked, redistribute proportionally
         if llm_confidence == 0.0 and l_weight > 0:
-            s_weight += l_weight
+            if has_semantic:
+                s_weight += l_weight * 0.5
+                e_weight += l_weight * 0.5
+            else:
+                s_weight += l_weight
             l_weight = 0.0
+        elif llm_confidence >= 0.7:
+            # LLM is highly confident — boost its weight as it's the
+            # most reliable signal for logic equivalence
+            if llm_confidence >= 0.9:
+                # Near-identical code: LLM dominates the score
+                boost = 0.25
+            else:
+                boost = 0.15
+            s_weight -= boost * 0.5
+            e_weight -= boost * 0.5
+            l_weight += boost
+
+        # Normalize weights to sum to 1.0
+        total_weight = s_weight + e_weight + l_weight
+        if total_weight > 0:
+            s_weight /= total_weight
+            e_weight /= total_weight
+            l_weight /= total_weight
 
         combined = (
             structural * s_weight + semantic * e_weight + llm_confidence * l_weight
