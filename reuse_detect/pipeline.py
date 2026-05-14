@@ -96,9 +96,7 @@ def detect_reusable_code(
     scorer = HybridScorerLLMValidator(config, llm_provider)
     renderer = DecisionRenderer(config)
 
-    logger.info(
-        "Vector store loaded with %d entries", store.size
-    )
+    logger.info("Vector store loaded with %d entries", store.size)
 
     # Stage 2: Extract changed blocks
     try:
@@ -141,7 +139,8 @@ def detect_reusable_code(
             # Additional filter: remove local candidates from the same file
             # (the staged version IS the local version on disk)
             candidates = [
-                c for c in candidates
+                c
+                for c in candidates
                 if not (
                     c.source == IndexSource.LOCAL_CODEBASE
                     and _is_same_file(c.fingerprint.block.file_path, block.file_path)
@@ -194,9 +193,7 @@ def detect_reusable_code(
         return Decision.PASS, []
 
     # Log top scores for debugging
-    top_scores = sorted(
-        [v.combined_score for v in all_validated], reverse=True
-    )[:5]
+    top_scores = sorted([v.combined_score for v in all_validated], reverse=True)[:5]
     logger.info(
         "Top combined scores: %s (warn=%.2f, block=%.2f)",
         [f"{s:.3f}" for s in top_scores],
@@ -246,8 +243,7 @@ def ensure_index_fresh(
                 )
         else:
             logger.warning(
-                "No GitHub repos matched project dependencies. "
-                "Configured repos: %s",
+                "No GitHub repos matched project dependencies. " "Configured repos: %s",
                 [r.url for r in config.github_repositories],
             )
         return

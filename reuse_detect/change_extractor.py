@@ -37,9 +37,7 @@ class ChangeExtractor:
             return []
 
         changed_files = self._parse_diff_files(diff_output)
-        logger.info(
-            "Found %d changed files in staged diff", len(changed_files)
-        )
+        logger.info("Found %d changed files in staged diff", len(changed_files))
         blocks: list[CodeBlock] = []
 
         for file_path, changed_lines, change_type in changed_files:

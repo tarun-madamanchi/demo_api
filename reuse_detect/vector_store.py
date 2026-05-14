@@ -182,7 +182,9 @@ class FAISSVectorStore:
             meta_with_vector = dict(meta)
             meta_with_vector["_vector"] = self._vectors[position]
 
-            results.append((meta["indexed_id"], float(distances[idx]), source, meta_with_vector))
+            results.append(
+                (meta["indexed_id"], float(distances[idx]), source, meta_with_vector)
+            )
 
         return results
 

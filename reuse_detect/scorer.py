@@ -333,9 +333,7 @@ class HybridScorerLLMValidator:
             l_weight = 0.0
 
         combined = (
-            structural * s_weight
-            + semantic * e_weight
-            + llm_confidence * l_weight
+            structural * s_weight + semantic * e_weight + llm_confidence * l_weight
         )
 
         return max(0.0, min(1.0, combined))

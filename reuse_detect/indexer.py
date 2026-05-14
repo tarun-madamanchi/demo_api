@@ -318,10 +318,13 @@ class UnifiedIndexer:
             logger.info("Shallow cloning %s", git_url)
             result = subprocess.run(
                 [
-                    "git", "clone",
-                    "--depth", "1",
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
                     "--single-branch",
-                    "--branch", "main",
+                    "--branch",
+                    "main",
                     git_url,
                     str(tmp_dir / "repo"),
                 ],
@@ -337,10 +340,13 @@ class UnifiedIndexer:
                 )
                 result = subprocess.run(
                     [
-                        "git", "clone",
-                        "--depth", "1",
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
                         "--single-branch",
-                        "--branch", "master",
+                        "--branch",
+                        "master",
                         git_url,
                         str(tmp_dir / "repo"),
                     ],
