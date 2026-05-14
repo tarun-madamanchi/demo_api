@@ -178,7 +178,11 @@ class FAISSVectorStore:
             if sources and source not in sources:
                 continue
 
-            results.append((meta["indexed_id"], float(distances[idx]), source, meta))
+            # Include the stored vector in metadata for scoring
+            meta_with_vector = dict(meta)
+            meta_with_vector["_vector"] = self._vectors[position]
+
+            results.append((meta["indexed_id"], float(distances[idx]), source, meta_with_vector))
 
         return results
 

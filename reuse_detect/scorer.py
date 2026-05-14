@@ -313,20 +313,23 @@ class HybridScorerLLMValidator:
         If LLM was not invoked (confidence=0), redistribute its weight.
         If semantic is unavailable (candidate from store without embedding),
         redistribute semantic weight to structural and LLM.
+
+        When both LLM and semantic are unavailable, structural score
+        becomes the sole signal — this is the common case in corporate
+        environments where external APIs are blocked.
         """
         s_weight = self.STRUCTURAL_WEIGHT
         e_weight = self.SEMANTIC_WEIGHT if has_semantic else 0.0
         l_weight = self.LLM_WEIGHT
 
-        # Redistribute semantic weight if unavailable
+        # If semantic is unavailable, give its weight to structural
         if not has_semantic:
-            s_weight += self.SEMANTIC_WEIGHT / 2
-            l_weight += self.SEMANTIC_WEIGHT / 2
+            s_weight += self.SEMANTIC_WEIGHT
 
-        # Redistribute LLM weight if not invoked
+        # If LLM is not invoked, give its weight to structural
+        # (structural is the most reliable signal without external APIs)
         if llm_confidence == 0.0 and l_weight > 0:
-            s_weight += l_weight / 2
-            e_weight += l_weight / 2
+            s_weight += l_weight
             l_weight = 0.0
 
         combined = (

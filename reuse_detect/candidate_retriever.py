@@ -103,14 +103,11 @@ class CandidateRetriever:
             decorators=metadata.get("decorators", []),
         )
 
-        # Reconstruct embedding — the vector is stored in the store's
-        # _vectors list, but we don't have direct access here. The
-        # embedding is primarily used for the initial ANN search which
-        # already happened. For scoring, structural features and content
-        # matter more. We store a placeholder.
+        # Reconstruct embedding — use the stored vector if available
+        stored_vector = metadata.get("_vector", [])
         embedding = CodeEmbedding(
-            vector=[],  # Not needed for scoring after retrieval
-            dim=0,
+            vector=stored_vector,
+            dim=len(stored_vector),
             model_id="stored",
         )
 

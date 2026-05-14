@@ -28,6 +28,15 @@ from .vector_store import FAISSVectorStore
 logger = logging.getLogger(__name__)
 
 
+def _is_same_file(path1: Path, path2: Path) -> bool:
+    """Check if two paths refer to the same file (handles relative paths)."""
+    # Normalize both paths for comparison
+    str1 = str(path1).replace("\\", "/").strip("/")
+    str2 = str(path2).replace("\\", "/").strip("/")
+    # Check if one ends with the other (handles relative vs absolute)
+    return str1 == str2 or str1.endswith(str2) or str2.endswith(str1)
+
+
 def get_indexable_repos(config: DetectionConfig, repo_root: Path | None = None) -> list:
     """Filter configured GitHub repos through DependencyChecker.
 
@@ -120,14 +129,41 @@ def detect_reusable_code(
             fp = builder.build(block)
 
             # Stage 4: Retrieve candidates
+            # Query BOTH sources but the retriever will filter self-matches
+            # by content_hash. For local matches, also filter by file path
+            # to avoid matching the same function against itself.
             candidates = retriever.query(
                 fp,
                 sources=[IndexSource.LOCAL_CODEBASE, IndexSource.GITHUB_LIBRARY],
                 top_k=config.top_k,
             )
 
+            # Additional filter: remove local candidates from the same file
+            # (the staged version IS the local version on disk)
+            candidates = [
+                c for c in candidates
+                if not (
+                    c.source == IndexSource.LOCAL_CODEBASE
+                    and _is_same_file(c.fingerprint.block.file_path, block.file_path)
+                )
+            ]
+
             if not candidates:
+                logger.debug(
+                    "No candidates for block %s:%d-%d after filtering",
+                    block.file_path,
+                    block.start_line,
+                    block.end_line,
+                )
                 continue
+
+            logger.info(
+                "Block %s:%d-%d has %d candidates to score",
+                block.file_path,
+                block.start_line,
+                block.end_line,
+                len(candidates),
+            )
 
             # Stage 5: Score and validate
             validated = scorer.score_and_validate(fp, candidates)
@@ -154,7 +190,19 @@ def detect_reusable_code(
 
     # Stage 6: Decision
     if not all_validated:
+        logger.info("No validated matches found. PASS.")
         return Decision.PASS, []
+
+    # Log top scores for debugging
+    top_scores = sorted(
+        [v.combined_score for v in all_validated], reverse=True
+    )[:5]
+    logger.info(
+        "Top combined scores: %s (warn=%.2f, block=%.2f)",
+        [f"{s:.3f}" for s in top_scores],
+        config.warn_threshold,
+        config.block_threshold,
+    )
 
     decision, suggestions = renderer.decide_and_render_all(blocks, all_validated)
 
