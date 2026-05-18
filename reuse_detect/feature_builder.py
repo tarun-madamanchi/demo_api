@@ -36,24 +36,85 @@ class EmbeddingProvider(Protocol):
         ...
 
 
-class GitHubModelsEmbeddingProvider:
+class embed:
     """Embedding provider using GitHub Models API with local fallback.
 
-    If the API is unreachable (SSL errors, network issues), automatically
-    switches to local embeddings for the rest of the session to avoid
-    repeated slow failures.
+    Tries GitHub Models API first (text-embedding-3-large). If the API
+    fails due to SSL/network issues (common behind corporate proxies),
+    falls back to LocalEmbeddingProvider for that call.
+
+    Uses truststore to handle corporate SSL certificates automatically.
+    If truststore is not installed, falls back to verify=False.
     """
 
     def __init__(
         self,
         model: str = "text-embedding-3-large",
         api_token: str | None = None,
+        pat_token: str | None = None,
     ):
         self._model = model
-        self._api_token = api_token
+        self._api_token = self._resolve_token(api_token, pat_token)
         self._dimension = 3072  # Default for text-embedding-3-large
         self._fallback: "LocalEmbeddingProvider | None" = None
-        self._api_disabled = False  # Set True after first network/SSL failure
+        self._api_disabled = False  # Set True after repeated network/SSL failures
+        self._ssl_context = self._create_ssl_context()
+        self._consecutive_failures = 0
+        self._max_consecutive_failures = 3  # Disable API after 3 consecutive failures
+
+    @staticmethod
+    def _resolve_token(
+        api_token: str | None = None,
+        pat_token: str | None = None,
+    ) -> str | None:
+        """Resolve which token to use for the GitHub Models API.
+
+        Priority:
+        1. Explicit pat_token parameter (fine-grained or classic PAT)
+        2. Explicit api_token parameter
+        3. GITHUB_PAT environment variable
+        4. GITHUB_TOKEN environment variable
+
+        PAT tokens (ghp_* or github_pat_*) are preferred because they
+        support SSO authorization for org-level Copilot access.
+        """
+        import os
+
+        # Explicit parameters take priority
+        if pat_token:
+            return pat_token
+        if api_token:
+            return api_token
+
+        # Fall back to environment variables
+        env_pat = os.environ.get("GITHUB_PAT")
+        if env_pat:
+            return env_pat
+
+        env_token = os.environ.get("GITHUB_TOKEN")
+        if env_token:
+            return env_token
+
+        return None
+
+    def _create_ssl_context(self):
+        """Create SSL context that trusts system/corporate certificates.
+
+        Tries truststore first (uses Windows cert store), then falls back
+        to no verification if truststore is unavailable.
+        """
+        try:
+            import truststore
+
+            truststore.inject_into_ssl()
+            logger.info("Using truststore for SSL (corporate certs supported)")
+            return True  # Signal: use default SSL verification
+        except ImportError:
+            logger.info(
+                "truststore not installed. Install with: pip install truststore. "
+                "Falling back to verify=False for GitHub Models API."
+            )
+            return False  # Signal: skip SSL verification
 
     def _get_fallback(self):
         """Lazy-load the local fallback provider."""
@@ -72,13 +133,20 @@ class GitHubModelsEmbeddingProvider:
         return self._dimension
 
     def embed(self, text: str) -> list[float]:
-        """Generate embedding via GitHub Models API, with local fallback."""
+        """Generate embedding via GitHub Models API, with local fallback.
+
+        Flow:
+        1. Try GitHub Models API (text-embedding-3-large)
+        2. If fails → use LocalEmbeddingProvider for this call
+        3. If fails 3 times consecutively → disable API for session
+        """
         import httpx
 
         if not self._api_token or self._api_disabled:
             return self._get_fallback().embed(text)
 
         try:
+            verify = self._ssl_context  # True if truststore loaded, False otherwise
             response = httpx.post(
                 "https://models.github.ai/inference/embeddings",
                 headers={
@@ -87,20 +155,28 @@ class GitHubModelsEmbeddingProvider:
                 },
                 json={"input": text, "model": self._model},
                 timeout=30.0,
-                verify=False,
+                verify=verify,
             )
             response.raise_for_status()
             data = response.json()
+            self._consecutive_failures = 0  # Reset on success
+            logger.debug("GitHub embedding API call successful (model: %s)", self._model)
             return data["data"][0]["embedding"]
         except Exception as e:
+            self._consecutive_failures += 1
             self._handle_api_failure(e)
+            logger.info(
+                "Falling back to local embedding for this block (failure %d/%d)",
+                self._consecutive_failures,
+                self._max_consecutive_failures,
+            )
             return self._get_fallback().embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for multiple texts, chunked to avoid timeouts.
+        """Generate embeddings for multiple texts via GitHub API with fallback.
 
-        Large batches can cause connection resets on corporate proxies.
-        Split into chunks of 10 with retry for reliability.
+        Chunks requests to avoid timeouts. Falls back to local embeddings
+        per-chunk if the API fails for that chunk.
         """
         import time
 
@@ -112,6 +188,7 @@ class GitHubModelsEmbeddingProvider:
         CHUNK_SIZE = 10
         MAX_RETRIES = 3
         all_embeddings: list[list[float]] = []
+        verify = self._ssl_context
 
         for i in range(0, len(texts), CHUNK_SIZE):
             chunk = texts[i : i + CHUNK_SIZE]
@@ -127,12 +204,13 @@ class GitHubModelsEmbeddingProvider:
                         },
                         json={"input": chunk, "model": self._model},
                         timeout=60.0,
-                        verify=False,
+                        verify=verify,
                     )
                     response.raise_for_status()
                     data = response.json()
                     sorted_data = sorted(data["data"], key=lambda x: x["index"])
                     all_embeddings.extend([item["embedding"] for item in sorted_data])
+                    self._consecutive_failures = 0
                     success = True
                     break
                 except Exception as e:
@@ -146,36 +224,43 @@ class GitHubModelsEmbeddingProvider:
                         )
                         time.sleep(3)
                     else:
+                        self._consecutive_failures += 1
+                        self._handle_api_failure(e)
                         logger.warning(
-                            "Embedding batch %d failed after %d retries: %s. Using fallback.",
+                            "Embedding batch %d failed after %d retries. Using local fallback.",
                             i // CHUNK_SIZE,
                             MAX_RETRIES,
-                            e,
                         )
 
             if not success:
-                # Only fall back for this specific chunk
                 all_embeddings.extend(self._get_fallback().embed_batch(chunk))
 
         return all_embeddings
 
     def _handle_api_failure(self, error: Exception) -> None:
-        """Handle API failure — disable API on network/SSL errors for session."""
+        """Handle API failure — disable API after repeated failures."""
         error_str = str(error)
-        # SSL and connection errors mean the API is unreachable from this
-        # network (corporate proxy with SSL inspection). Disable further
-        # attempts to avoid repeated 60s timeout waits.
-        if any(
-            keyword in error_str
-            for keyword in ("SSL", "CERTIFICATE_VERIFY", "ConnectError", "timed out")
-        ):
+
+        if self._consecutive_failures >= self._max_consecutive_failures:
             if not self._api_disabled:
                 logger.warning(
-                    "GitHub Models API unreachable (likely corporate SSL proxy): %s. "
-                    "Switching to local embeddings for this session.",
+                    "GitHub Models API failed %d times consecutively. "
+                    "Disabling API and using local embeddings for this session. "
+                    "Last error: %s",
+                    self._consecutive_failures,
                     error,
                 )
                 self._api_disabled = True
+        elif any(
+            keyword in error_str
+            for keyword in ("SSL", "CERTIFICATE_VERIFY", "ConnectError", "timed out")
+        ):
+            logger.warning(
+                "GitHub Models API network issue: %s. "
+                "Using local fallback for this call. "
+                "Tip: pip install truststore to fix corporate SSL issues.",
+                error,
+            )
         else:
             logger.warning("GitHub Models embedding API failed: %s", error)
 
@@ -377,3 +462,7 @@ class FeatureEmbeddingBuilder:
             dim=len(vector),
             model_id=self.embedding_provider.model_id,
         )
+
+
+# Backward-compatible alias — cli.py and other modules import this name
+GitHubModelsEmbeddingProvider = embed

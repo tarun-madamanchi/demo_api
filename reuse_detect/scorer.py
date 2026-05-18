@@ -38,7 +38,7 @@ class GitHubModelsLLMProvider:
 
     def __init__(
         self,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-4.1",
         api_token: str | None = None,
     ):
         self._model = model

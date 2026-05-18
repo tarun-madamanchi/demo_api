@@ -301,9 +301,14 @@ class UnifiedIndexer:
     def _fetch_via_git_clone(self, repo_url: str) -> list[CodeBlock]:
         """Fetch repo via shallow git clone.
 
-        Uses the system's git credentials (credential manager), which
-        typically have SSO authorization for enterprise orgs.
+        Uses the PAT token (if available) embedded in the clone URL for
+        authentication. This avoids relying on the system credential manager
+        which may not have SSO authorization for enterprise orgs.
+
+        Falls back to system git credentials if no token is available.
         """
+        import os
+
         # Ensure it's a proper git URL
         if not repo_url.startswith("https://"):
             git_url = f"https://github.com/{repo_url.lstrip('/')}"
@@ -313,9 +318,18 @@ class UnifiedIndexer:
         if not git_url.endswith(".git"):
             git_url = git_url + ".git"
 
+        # Inject PAT token into the URL for authentication
+        # Priority: self.api_token > GITHUB_PAT env > GITHUB_TOKEN env
+        token = self.api_token or os.environ.get("GITHUB_PAT") or os.environ.get("GITHUB_TOKEN")
+        if token:
+            # https://github.com/org/repo.git -> https://x-access-token:TOKEN@github.com/org/repo.git
+            auth_url = git_url.replace("https://", f"https://x-access-token:{token}@")
+        else:
+            auth_url = git_url
+
         tmp_dir = Path(tempfile.mkdtemp(prefix="reuse_detect_"))
         try:
-            logger.info("Shallow cloning %s", git_url)
+            logger.info("Shallow cloning %s", repo_url)  # Log without token
             result = subprocess.run(
                 [
                     "git",
@@ -325,7 +339,7 @@ class UnifiedIndexer:
                     "--single-branch",
                     "--branch",
                     "main",
-                    git_url,
+                    auth_url,
                     str(tmp_dir / "repo"),
                 ],
                 capture_output=True,
@@ -347,7 +361,7 @@ class UnifiedIndexer:
                         "--single-branch",
                         "--branch",
                         "master",
-                        git_url,
+                        auth_url,
                         str(tmp_dir / "repo"),
                     ],
                     capture_output=True,
